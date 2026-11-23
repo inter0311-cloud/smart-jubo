@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>웹주보 연결 복구</title><style>body{max-width:550px;margin:8vh auto;padding:24px;font:17px/1.8 sans-serif;background:#FAF7F2;color:#1E1F4B}button,a{padding:12px 18px;background:#1E1F4B;color:white;border:0;border-radius:10px;font:inherit;display:inline-block}</style></head>
+<body><h1>웹주보 연결 복구</h1><p id="status" role="status">연결 기능을 업데이트하고 있습니다. 잠시 기다려 주세요.</p><p>이 기기에 저장된 작성 내용과 개인 기록은 유지됩니다.</p><button id="retry" hidden>다시 시도</button><a id="open" hidden href="./">주보 열기</a>
+<script>
+(function(){
+ const label=document.getElementById('status'),retry=document.getElementById('retry');
+ function build(worker){return new Promise(resolve=>{if(!worker){resolve('');return;}const channel=new MessageChannel();const timer=setTimeout(()=>resolve(''),1500);channel.port1.onmessage=e=>{clearTimeout(timer);resolve(e.data?.build||'');channel.port1.close();};worker.postMessage({type:'GET_BULLETIN_BUILD'},[channel.port2]);});}
+ async function recover(){
+  retry.hidden=true;label.textContent='연결 기능을 업데이트하고 있습니다. 잠시 기다려 주세요.';
+  try{
+   if(!('serviceWorker'in navigator))throw new Error('이 브라우저에서는 자동 복구 기능을 사용할 수 없습니다.');
+   const r=await navigator.serviceWorker.register('./sw.js',{scope:'./',updateViaCache:'none'});
+   await r.update();
+   const start=Date.now();
+   while(Date.now()-start<25000){
+    if(r.waiting)r.waiting.postMessage({type:'SKIP_WAITING'});
+    if(await build(r.active)==='20261103-fastopen-5'){
+     label.textContent='연결 기능을 업데이트했습니다. 주보를 엽니다.';
+     document.getElementById('open').hidden=false;
+     location.replace('./?pwa_recovery=5');return;
+    }
+    await new Promise(resolve=>setTimeout(resolve,500));
+   }
+   throw new Error('최신 복구 파일을 받지 못했습니다. 인터넷 연결과 새 파일 배포 여부를 확인해 주세요.');
+  }catch(e){label.textContent=e.message||'연결을 복구하지 못했습니다. 다시 시도해 주세요.';retry.hidden=false;}
+ }
+ retry.onclick=recover;recover();
+})();
+</script></body></html>

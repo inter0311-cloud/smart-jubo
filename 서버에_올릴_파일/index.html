@@ -1,5 +1,5 @@
 <!doctype html>
-<html data-pwa-build="20261123-base-3" data-skin="a" data-bulletin-release="1795431193792" lang="ko" data-bulletin-starting="home"><head><meta charset="UTF-8"><script id="legacy-polyfills">(function(){var E=window.Element&&Element.prototype;if(E&&!E.replaceChildren){var f=function(){while(this.firstChild)this.removeChild(this.firstChild);this.append.apply(this,arguments)};E.replaceChildren=f;if(window.DocumentFragment)DocumentFragment.prototype.replaceChildren=f;}if(window.NodeList&&!NodeList.prototype.forEach)NodeList.prototype.forEach=Array.prototype.forEach;})();</script><script id="bulletin-pwa-recovery">(function() {
+<html data-pwa-build="20261125-sheet-1" data-skin="a" data-bulletin-release="1795431193792" lang="ko" data-bulletin-starting="home"><head><meta charset="UTF-8"><script id="legacy-polyfills">(function(){var E=window.Element&&Element.prototype;if(E&&!E.replaceChildren){var f=function(){while(this.firstChild)this.removeChild(this.firstChild);this.append.apply(this,arguments)};E.replaceChildren=f;if(window.DocumentFragment)DocumentFragment.prototype.replaceChildren=f;}if(window.NodeList&&!NodeList.prototype.forEach)NodeList.prototype.forEach=Array.prototype.forEach;})();</script><script id="bulletin-pwa-recovery">(function() {
   if (!("serviceWorker" in navigator) || !/^https?:$/.test(location.protocol)) return;
   const root = new URL("./", location.href), worker = new URL("sw.js", root);
   const current = document.documentElement.getAttribute("data-bulletin-release") + ":" + document.documentElement.getAttribute("data-pwa-build");
@@ -896,6 +896,7 @@ html[data-skin] .badge-new{top:-7px;right:10px}
             <div class="card admin-only" style="border: 1.5px solid #2B6CB0; background: #EBF8FF; border-radius: 20px;">
                 <div class="card-header" style="color: #2B6CB0; border-bottom: none; margin-bottom: 8px;"><i class="fa-solid fa-cloud-arrow-up"></i> 구글 시트 웹앱 연동 URL</div>
                 <input type="text" id="input-globalWebhook" class="form-input-box" oninput="saveData('globalWebhook', this.value)" placeholder="https://script.google.com/macros/s/.../exec">
+                <div style="margin-top:8px; font-size:12px; line-height:1.6; color:#2C5282;">구글 시트에 <b>'주보' 탭</b>을 만들면(시트 메뉴 [스마트 주보] → [① 주보 입력 탭 만들기]) 그 탭에 쓴 이번 주 내용과 유튜브 최신 예배 영상이 주보에 바로 보입니다. 서버에 다시 올리지 않아도 됩니다.</div>
                 <button onclick="resetWebhookURL()" style="margin-top:8px; background:#718096; color:white; border:none; padding:8px; border-radius:8px; width:100%; font-size:12px; font-weight:700; cursor:pointer;"><i class="fa-solid fa-trash-can"></i> 기기 캐시 주소 지우기 (초기화)</button>
             </div>
      
@@ -1393,10 +1394,14 @@ function compactStoreForDeployment(src) {
   return out;
 }
 const publishedBadgeVersion = String(store.deploymentTimestamp || 0);
+const badgeVersionOverride = {};
+function badgeVersion(type) {
+  return badgeVersionOverride[type] || publishedBadgeVersion;
+}
 function renderNewBadges() {
   ["worship", "dosirak", "shorts", "friday"].forEach((type) => {
     var _a2;
-    const read = bulletinStorage.getItem("dasibon_badgeReadVersion_" + type) === publishedBadgeVersion;
+    const read = bulletinStorage.getItem("dasibon_badgeReadVersion_" + type) === badgeVersion(type);
     const enabled = ((_a2 = store.badgeEnabled) == null ? void 0 : _a2[type]) !== false;
     document.documentElement.toggleAttribute("data-read-" + type, read);
     if (read) document.documentElement.setAttribute("data-read-" + type, "true");
@@ -1405,7 +1410,7 @@ function renderNewBadges() {
   });
 }
 function markBadgeRead(type) {
-  bulletinStorage.setItem("dasibon_badgeReadVersion_" + type, publishedBadgeVersion);
+  bulletinStorage.setItem("dasibon_badgeReadVersion_" + type, badgeVersion(type));
   renderNewBadges();
 }
 function setNewBadge(type, enabled) {
@@ -1546,13 +1551,103 @@ function saveToStorage(key) {
     console.error("\uB370\uC774\uD130 \uC800\uC7A5 \uC2E4\uD328:", e);
   }
 }
+/* v1.1 구글 시트 '주보' 탭에서 이번 주 내용 + 유튜브 최신 예배 영상 불러오기
+   - 구글 시트 연동 주소(globalWebhook)가 있고, 시트에 '주보' 탭이 있을 때만 작동합니다.
+   - 글 항목은 시트에 쓴 그대로 보입니다(빈칸이면 빈칸). 링크 항목과 주보 날짜는 빈칸이면 주보 파일의 값을 씁니다.
+   - 주보 파일의 날짜가 시트 날짜보다 새로우면(관리자 모드로 새 주보를 올린 경우) 파일 내용을 그대로 둡니다.
+   - 마지막으로 받은 내용은 기기에 저장해 두어 인터넷이 끊겨도 보입니다. */
+const SHEET_TEXT_KEYS = ["sermonTitle", "preacher", "bibleHeading", "biblePassage", "summary", "questions", "worshipOrder", "churchNews", "serviceInfo"];
+const SHEET_LINK_KEYS = ["bulletinDate", "youtubeLink", "fridayLink", "fridayNotice", "dosirakLink", "shortsLink"];
+const SHEET_CACHE_KEY = "dasibon_sheetBulletin";
+const FILE_BULLETIN_DATE = Array.isArray(store.bulletinHistory) && store.bulletinHistory[0] && store.bulletinHistory[0].date || store.bulletinDate || "";
+let sheetRefreshAt = 0;
+let sheetBase = null;
+function sheetBaseValue(k) {
+  const saved = bulletinStorage.getItem("dasibon_" + k);
+  if (saved === null || saved === void 0) return sheetBase[k];
+  try {
+    const v = JSON.parse(saved);
+    if (typeof v === "string") return v;
+  } catch (e) {
+  }
+  return saved;
+}
+function applySheetBulletin(data) {
+  if (isAdminMode || isHistoryView) return false;
+  const keys = SHEET_TEXT_KEYS.concat(SHEET_LINK_KEYS);
+  if (!sheetBase) {
+    sheetBase = {};
+    keys.forEach((k) => sheetBase[k] = store[k]);
+  }
+  const before = JSON.stringify(keys.map((k) => store[k])) + badgeVersion("worship");
+  keys.forEach((k) => store[k] = sheetBaseValue(k));
+  delete badgeVersionOverride.worship;
+  if (!data || data.ok !== true) return JSON.stringify(keys.map((k) => store[k])) + badgeVersion("worship") !== before;
+  const c = data.content || {};
+  const sheetDate = String(c.bulletinDate || "").trim();
+  const fileIsNewer = !!(sheetDate && FILE_BULLETIN_DATE && parseDateSafe(sheetDate) < parseDateSafe(FILE_BULLETIN_DATE));
+  if (!fileIsNewer) {
+    SHEET_TEXT_KEYS.forEach((k) => {
+      if (typeof c[k] === "string") store[k] = c[k];
+    });
+    SHEET_LINK_KEYS.forEach((k) => {
+      if (typeof c[k] === "string" && c[k].trim()) store[k] = c[k].trim();
+    });
+  }
+  const v = data.video;
+  const manualLink = !fileIsNewer && typeof c.youtubeLink === "string" && c.youtubeLink.trim();
+  if (v && v.url && v.id && !manualLink && (!fileIsNewer || !String(store.youtubeLink || "").trim())) {
+    store.youtubeLink = v.url;
+    badgeVersionOverride.worship = "yt:" + v.id;
+  }
+  return JSON.stringify(keys.map((k) => store[k])) + badgeVersion("worship") !== before;
+}
+function applyCachedSheetBulletin() {
+  try {
+    applySheetBulletin(JSON.parse(bulletinStorage.getItem(SHEET_CACHE_KEY) || "null"));
+  } catch (e) {
+  }
+}
+function refreshSheetViews() {
+  SHEET_TEXT_KEYS.concat(SHEET_LINK_KEYS).forEach((k) => {
+    const el = document.getElementById("input-" + k);
+    if (el && document.activeElement !== el) el.value = store[k] || "";
+  });
+  updateViews();
+}
+async function refreshFromSheet(force) {
+  const base = String(store.globalWebhook || "").trim();
+  if (!/^https?:\/\//i.test(base) || navigator.onLine === false) return;
+  if (!force && Date.now() - sheetRefreshAt < 6e4) return;
+  sheetRefreshAt = Date.now();
+  const ctrl = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), 1e4) : 0;
+  try {
+    const url = base + (base.indexOf("?") === -1 ? "?" : "&") + "action=bulletin&t=" + Date.now();
+    const r = await fetch(url, { cache: "no-store", credentials: "omit", signal: ctrl ? ctrl.signal : void 0 });
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!data || typeof data !== "object") return;
+    if (data.ok === true) bulletinStorage.setItem(SHEET_CACHE_KEY, JSON.stringify(data));
+    else bulletinStorage.removeItem(SHEET_CACHE_KEY);   // '주보' 탭을 지우면 원래 주보 파일 내용으로 돌아감
+    if (applySheetBulletin(data)) refreshSheetViews();
+  } catch (e) {
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && window.bulletinAppReady) refreshFromSheet(false);
+});
 async function startBulletin() {
   switchTab("home");
   await bulletinStorage.ready();
   window.isZoomEventInitialized = false;
   loadStorage();
+  applyCachedSheetBulletin();
   initValues();
   switchTab("home");
+  setTimeout(() => refreshFromSheet(true), 0);
   setTimeout(logVisitor, 0);
   setTimeout(flushSheetOutbox, 3e3);
   setTimeout(registerBulletinWorker, 1e3);
@@ -1945,6 +2040,7 @@ function exitHistoryMode() {
   window.currentSheetsExpired = false;
   isHistoryView = false;
   loadStorage();
+  applyCachedSheetBulletin();
   initValues();
   alert("\uCD5C\uC2E0 \uC8FC\uBCF4 \uD654\uBA74\uC73C\uB85C \uB3CC\uC544\uC654\uC2B5\uB2C8\uB2E4.");
 }
